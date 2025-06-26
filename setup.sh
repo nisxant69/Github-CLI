@@ -20,8 +20,7 @@ else
 fi
 
 # --- Step 2: Download and install the CLI tool ---
-echo "Downloading 'repo' CLI script..."
-
+echo "📥 Downloading 'repo' CLI script..."
 sudo curl -fsSL https://cdn.jsdelivr.net/gh/nisxant69/Github-CLI@main/repo -o /usr/local/bin/repo
 
 if [ ! -f /usr/local/bin/repo ]; then
@@ -51,10 +50,9 @@ NETRC_FILE="$HOME/.netrc"
 
 chmod 600 "$NETRC_FILE"
 
-# Save username for later use in the CLI (optional)
-CONFIG_FILE="$HOME/.repo-cli"
-echo "GITHUB_USER=$gh_user" > "$CONFIG_FILE"
+# Save username for CLI use (optional)
+echo "GITHUB_USER=$gh_user" > "$HOME/.repo-cli"
 
 echo ""
 echo "✅ Setup complete!"
-echo "You can now use the 'repo' command. Try: repo help"
+echo "Try: repo help"
