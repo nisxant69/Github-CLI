@@ -48,10 +48,10 @@ echo "👉 Go to https://github.com/settings/tokens and generate a token with 'r
 read -s -p "Enter your GitHub Personal Access Token (PAT): " gh_token
 echo ""
 
-# Save to ~/.netrc
+# Save to ~/.netrc with 'api.github.com'
 NETRC_FILE="$HOME/.netrc"
 {
-  echo "machine github.com"
+  echo "machine api.github.com"
   echo "login $gh_user"
   echo "password $gh_token"
 } > "$NETRC_FILE"
@@ -63,4 +63,4 @@ echo "GITHUB_USER=$gh_user" > "$HOME/.repo-cli"
 
 echo ""
 echo "✅ Setup complete!"
-echo "Try: repo help"
+echo "You can now run: repo help"
