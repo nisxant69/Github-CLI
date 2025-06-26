@@ -27,7 +27,7 @@ fi
 
 # --- Step 2: Download and install the CLI tool ---
 echo "📥 Downloading 'repo' CLI script..."
-sudo curl -fsSL https://cdn.jsdelivr.net/gh/nisxant69/Github-CLI@main/repo -o /usr/local/bin/repo
+sudo curl -fsSL https://raw.githubusercontent.com/nisxant69/Github-CLI/main/repo -o /usr/local/bin/repo
 
 if [ ! -f /usr/local/bin/repo ]; then
   echo "❌ Failed to download 'repo' script."
