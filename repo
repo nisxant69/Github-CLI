@@ -171,4 +171,4 @@ case "$COMMAND" in
       if [[ $repo_count -eq 0 ]]; then
         break
       fi
-      echo "$repos" | jq -r '.[] | "
+      echo "$repos" | jq -r '.[] | .name'
