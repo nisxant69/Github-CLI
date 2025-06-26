@@ -1,63 +1,60 @@
 #!/bin/bash
-set -e
 
 echo "Starting 'repo' CLI setup..."
 
-if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root (sudo): sudo $0"
+# --- Step 1: Install Dependencies ---
+echo "Installing dependencies..."
+
+if command -v apt &>/dev/null; then
+  sudo apt update && sudo apt install -y git curl jq
+elif command -v dnf &>/dev/null; then
+  sudo dnf install -y git curl jq
+elif command -v pacman &>/dev/null; then
+  sudo pacman -Sy --noconfirm git curl jq
+elif command -v brew &>/dev/null; then
+  brew install git curl jq
+else
+  echo "❌ Unsupported OS or package manager."
+  echo "👉 Please install git, curl, and jq manually."
   exit 1
 fi
 
-install_dependencies() {
-  echo "Installing dependencies..."
-  if command -v apt-get &>/dev/null; then
-    apt-get update
-    apt-get install -y git curl jq
-  elif command -v brew &>/dev/null; then
-    brew install git curl jq
-  else
-    echo "Unsupported OS or package manager."
-    echo "Please install git, curl, jq manually."
-    exit 1
-  fi
-}
+# --- Step 2: Download and install the CLI tool ---
+echo "Downloading 'repo' CLI script..."
 
-install_dependencies
+sudo curl -fsSL https://cdn.jsdelivr.net/gh/nisxant69/Github-CLI@main/repo -o /usr/local/bin/repo
 
-# Determine script directory (assumes setup.sh & repo are together if cloned)
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-REPO_SCRIPT="$SCRIPT_DIR/repo"
-
-# If repo script does not exist in same dir, download it directly from GitHub CDN
-if [ ! -f "$REPO_SCRIPT" ]; then
-  echo "'repo' script not found locally, downloading latest version..."
-  curl -fsSL "https://cdn.jsdelivr.net/gh/yourusername/repo-cli@main/repo" -o /usr/local/bin/repo
-  chmod +x /usr/local/bin/repo
-else
-  echo "Installing 'repo' command to /usr/local/bin/repo ..."
-  cp "$REPO_SCRIPT" /usr/local/bin/repo
-  chmod +x /usr/local/bin/repo
+if [ ! -f /usr/local/bin/repo ]; then
+  echo "❌ Failed to download 'repo' script."
+  exit 1
 fi
 
-NETRC_FILE="/root/.netrc"
-if [ -f "$NETRC_FILE" ]; then
-  echo "~/.netrc already exists for root, skipping."
-else
-  echo "Setting up GitHub credentials."
-  read -rp "GitHub username: " GH_USER
-  read -rsp "GitHub Personal Access Token (PAT): " GH_TOKEN
-  echo
-  cat >"$NETRC_FILE" <<EOF
-machine api.github.com
-login $GH_USER
-password $GH_TOKEN
-EOF
-  chmod 600 "$NETRC_FILE"
-  echo "GitHub credentials saved securely."
-fi
+sudo chmod +x /usr/local/bin/repo
 
-echo
-echo "'repo' CLI installed successfully!"
-echo "Run 'repo help' to get started."
+# --- Step 3: Prompt for GitHub credentials and save securely ---
+echo ""
+echo "🔐 GitHub Authentication Setup"
+read -p "Enter your GitHub username: " gh_user
 
-exit 0
+echo ""
+echo "👉 Go to https://github.com/settings/tokens and generate a token with 'repo' scope"
+read -s -p "Enter your GitHub Personal Access Token (PAT): " gh_token
+echo ""
+
+# Save to ~/.netrc
+NETRC_FILE="$HOME/.netrc"
+{
+  echo "machine github.com"
+  echo "login $gh_user"
+  echo "password $gh_token"
+} > "$NETRC_FILE"
+
+chmod 600 "$NETRC_FILE"
+
+# Save username for later use in the CLI (optional)
+CONFIG_FILE="$HOME/.repo-cli"
+echo "GITHUB_USER=$gh_user" > "$CONFIG_FILE"
+
+echo ""
+echo "✅ Setup complete!"
+echo "You can now use the 'repo' command. Try: repo help"
