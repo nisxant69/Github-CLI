@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# --- Step 0: Prevent running as root ---
+if [ "$EUID" -eq 0 ]; then
+  echo "⚠️  Please run this script as a normal user, not with sudo."
+  echo "👉 Run it like this:"
+  echo "    curl -fsSL https://cdn.jsdelivr.net/gh/nisxant69/Github-CLI@main/setup.sh | bash"
+  exit 1
+fi
+
 echo "Starting 'repo' CLI setup..."
 
 # --- Step 1: Install Dependencies ---
