@@ -1,10 +1,8 @@
 #!/bin/bash
 
-# --- Step 0: Prevent running as root ---
-if [ "$EUID" -eq 0 ]; then
-  echo "⚠️  Please run this script as a normal user, not with sudo."
-  echo "👉 Run it like this:"
-  echo "    curl -fsSL https://cdn.jsdelivr.net/gh/nisxant69/Github-CLI@main/setup.sh | bash"
+# --- Step 0: Ensure 'sudo' is available ---
+if ! command -v sudo >/dev/null; then
+  echo "❌ 'sudo' is required but not found. Please install sudo and try again."
   exit 1
 fi
 
