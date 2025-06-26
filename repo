@@ -1,0 +1,174 @@
+#!/bin/bash
+set -e
+
+NETRC_FILE="$HOME/.netrc"
+
+trap 'echo -e "\nOperation interrupted by user."; exit 130' SIGINT
+
+check_dependencies() {
+  local deps=("curl" "jq" "git")
+  local missing=()
+  for dep in "${deps[@]}"; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      missing+=("$dep")
+    fi
+  done
+  if [ ${#missing[@]} -ne 0 ]; then
+    echo "Error: Missing dependencies: ${missing[*]}"
+    echo "Please install them and try again."
+    exit 1
+  fi
+}
+
+spinner() {
+  local pid=$1
+  local delay=0.1
+  local spinstr='|/-\'
+  printf " "
+  while kill -0 $pid 2>/dev/null; do
+    for ((i=0; i<${#spinstr}; i++)); do
+      printf "\b${spinstr:i:1}"
+      sleep $delay
+    done
+  done
+  printf "\b"
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  repo -create <repo-name> [options]    Create a repo
+  repo delete <repo-name>                Delete a repo (asks confirmation)
+  repo open <repo-name>                  Open repo GitHub page in browser
+  repo list                             List your GitHub repositories
+  repo clone [username/]repo [-d dir]   Clone repo locally
+     Options for clone:
+       -clean          Clone and remove .git folder
+       -d directory    Target directory
+  repo push                             Push local commits to remote 'main' branch
+  repo help                             Show this help message
+
+Create options:
+  -d directory         Optional base directory for new repo
+  -p                   Make repo private (default public)
+  --desc description   Repository description
+  --gitignore template .gitignore template (e.g. Node, Python)
+  --license license    License template (e.g. mit, apache-2.0)
+  --topics tags        Comma-separated topics
+  -push                Push initial commit after creation
+
+Examples:
+  repo -create MyRepo -p --desc "Private repo" --gitignore Node --license mit --topics cli,tool -d ~/projects -push
+  repo delete MyRepo
+  repo open MyRepo
+  repo list
+  repo clone nisxant69/SyncPlaylist
+  repo clone -clean nisxant69/SyncPlaylist -d ~/downloads
+  repo push
+
+EOF
+  exit 0
+}
+
+check_credentials() {
+  if ! grep -q "machine api.github.com" "$NETRC_FILE" 2>/dev/null; then
+    echo "No GitHub credentials found in ~/.netrc. Please run setup script."
+    exit 1
+  fi
+}
+
+check_token_scopes() {
+  scopes=$(curl -sI --netrc -H "Accept: application/vnd.github.v3+json" https://api.github.com/user | grep -i '^x-oauth-scopes:' | cut -d' ' -f2- | tr -d '\r')
+  required_scopes=("repo")
+  local missing_scopes=()
+  for scope in "${required_scopes[@]}"; do
+    if ! echo "$scopes" | grep -qw "$scope"; then
+      missing_scopes+=("$scope")
+    fi
+  done
+  if [ ${#missing_scopes[@]} -ne 0 ]; then
+    echo "Warning: Your GitHub token is missing required scope(s): ${missing_scopes[*]}"
+    echo "Please update your token permissions."
+  fi
+}
+
+check_dependencies
+
+if [ $# -lt 1 ]; then
+  usage
+fi
+
+COMMAND="$1"
+shift
+
+github_user=$(grep -A2 "machine api.github.com" "$NETRC_FILE" | grep login | awk '{print $2}')
+
+case "$COMMAND" in
+  help)
+    usage
+    ;;
+
+  delete)
+    if [ $# -ne 1 ]; then
+      echo "Please provide repository name to delete."
+      usage
+    fi
+    REPO_NAME="$1"
+    check_credentials
+    check_token_scopes
+    echo "WARNING: This will permanently delete '$github_user/$REPO_NAME'."
+    read -rp "Type 'yes' to confirm: " confirm
+    if [[ "$confirm" != "yes" ]]; then
+      echo "Deletion cancelled."
+      exit 0
+    fi
+    echo -n "Deleting repo '$github_user/$REPO_NAME'..."
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" --netrc -X DELETE "https://api.github.com/repos/$github_user/$REPO_NAME")
+    if [[ "$http_code" == "204" ]]; then
+      echo " Done."
+      echo "Repository deleted."
+    else
+      echo " Failed."
+      echo "HTTP code: $http_code"
+    fi
+    ;;
+
+  open)
+    if [ $# -ne 1 ]; then
+      echo "Please provide repository name to open."
+      usage
+    fi
+    REPO_NAME="$1"
+    check_credentials
+    repo_url="https://github.com/$github_user/$REPO_NAME"
+    echo -n "Opening $repo_url ..."
+    if command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$repo_url" >/dev/null 2>&1 &
+      pid=$!
+      spinner $pid
+      wait $pid
+      echo " Done."
+    elif command -v open >/dev/null 2>&1; then
+      open "$repo_url" >/dev/null 2>&1 &
+      pid=$!
+      spinner $pid
+      wait $pid
+      echo " Done."
+    else
+      echo
+      echo "Cannot open browser automatically. Open manually: $repo_url"
+    fi
+    ;;
+
+  list)
+    check_credentials
+    echo "Fetching repos for $github_user..."
+    page=1
+    per_page=100
+    while :; do
+      repos=$(curl -s --netrc "https://api.github.com/user/repos?per_page=$per_page&page=$page")
+      repo_count=$(echo "$repos" | jq '. | length')
+      if [[ $repo_count -eq 0 ]]; then
+        break
+      fi
+      echo "$repos" | jq -r '.[] | "
