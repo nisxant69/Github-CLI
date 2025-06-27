@@ -1,10 +1,6 @@
-Got it! Here’s the entire detailed README in one single copy box for you — just copy all at once and save as README.md:
-
 # 🚀 Repo CLI Tool
 
 **Manage your GitHub repositories directly from the terminal — create, delete, clone, list, open, and push — all with one simple CLI!** ✨
-
----
 
 ## ✨ Features
 
@@ -16,73 +12,50 @@ Got it! Here’s the entire detailed README in one single copy box for you — j
 - 📤 Push local commits to remote `main` branch  
 - ⚙️ Automated setup — zero hassle!
 
----
-
 ## 🛠️ Requirements
 
-- macOS or Linux  
+- Git Bash (Windows) or Terminal (macOS/Linux)
 - `bash` shell  
 - `git`, `curl`, and `jq` (auto-installed by setup script if missing)  
 - GitHub Personal Access Token (PAT) with **`repo`** scope 🔐  
-
----
 
 ## 🚀 Installation
 
 Run this single command in your terminal to install everything automatically:
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/yourusername/repo-cli@main/setup.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/nisxant69/Github-CLI/main/setup.sh | bash
+```
 
 This will:
+- 📦 Install dependencies if missing (git, curl, jq)
+- 📥 Download and install the repo CLI script
+- 🔐 Prompt you for GitHub username & PAT, saving credentials securely
 
-📦 Install dependencies if missing (git, curl, jq)
+## 🔑 Setting Up Your GitHub Personal Access Token (PAT)
 
-📥 Download and install the repo CLI script globally at /usr/local/bin/repo
-
-🔐 Prompt you for GitHub username & PAT, saving credentials securely in /root/.netrc (or your home directory for non-root installs)
-
-
-
----
-
-🔑 Setting Up Your GitHub Personal Access Token (PAT)
-
-1. Visit GitHub Token Settings
-
-
-2. Click Generate new token (classic)
-
-
-3. Select the repo scope (for full control of private repositories)
-
-
+1. Visit [GitHub Token Settings](https://github.com/settings/tokens)
+2. Click "Generate new token (classic)"
+3. Select the `repo` scope (for full control of private repositories)
 4. Generate the token and copy it immediately
-
-
 5. You will be prompted to enter this token during installation
 
-
-
-
----
-
-💡 Usage
+## 💡 Usage
 
 Type the following command to get help and see available commands:
 
+```bash
 repo help
+```
 
+### Common Commands
 
----
-
-Common Commands
-
+```bash
 # Create a new GitHub repository (public by default)
-repo -create MyRepo
+repo create MyRepo
 
-# Create a private repository with description, gitignore, license, topics, push initial commit, and custom directory
-repo -create MyRepo -p --desc "My private repo" --gitignore Node --license mit --topics cli,tool -d ~/projects -push
+# Create a private repository with description, gitignore, license, topics, push initial commit
+repo create MyRepo -p --desc "My private repo" --gitignore Node --license mit --topics cli,tool -d ~/projects -push
 
 # Delete a repository with confirmation prompt
 repo delete MyRepo
@@ -102,61 +75,39 @@ repo open MyRepo
 
 # Push local commits to the remote main branch
 repo push
+```
 
+## 🔒 Security Notes
 
----
+- Credentials are stored securely in your `~/.netrc` file with strict 600 permissions
+- Your Personal Access Token must have `repo` scope to enable repo creation, deletion, and pushing
+- Never share your Personal Access Token publicly to avoid unauthorized access
 
-🔒 Security Notes
+## 🐞 Troubleshooting
 
-Credentials are stored securely in your ~/.netrc file with strict 600 permissions
+- If dependencies (git, curl, jq) are missing, run the setup script again
+- Authentication errors? Re-run the setup script and carefully re-enter your GitHub username and PAT
+- For API issues, check GitHub rate limits and network connectivity
+- Make sure your token has the necessary permissions (repo scope)
 
-Your Personal Access Token must have repo scope to enable repo creation, deletion, and pushing
-
-Never share your Personal Access Token publicly to avoid unauthorized access
-
-
-
----
-
-🐞 Troubleshooting
-
-If dependencies (git, curl, jq) are missing, run the setup script again
-
-Authentication errors? Re-run the setup script and carefully re-enter your GitHub username and PAT
-
-For API issues, check GitHub rate limits and network connectivity
-
-Make sure your token has the necessary permissions (repo scope)
-
-
-
----
-
-🤝 Contribution & Support
+## 🤝 Contribution & Support
 
 Contributions, bug reports, and feature requests are very welcome!
-Please open issues or pull requests at the GitHub repository.
+Please open issues or pull requests at the [GitHub repository](https://github.com/nisxant69/Github-CLI).
 
+## 📄 License
 
----
-
-📄 License
-
-This project is licensed under the MIT License © Your Name
-
+This project is licensed under the MIT License © 2024 nisxant69
 
 ---
 
 Ready to get started? Run this one-liner in your terminal:
 
-curl -fsSL https://cdn.jsdelivr.net/gh/yourusername/repo-cli@main/setup.sh | sudo bash
+```bash
+curl -fsSL https://raw.githubusercontent.com/nisxant69/Github-CLI/main/setup.sh | bash
+```
 
-Then use the repo command anywhere in your terminal!
-
-
----
+Then use the `repo` command anywhere in your terminal!
 
 Happy coding! 🎉
-
-Just select all the text above and copy it — everything is inside one code block for your convenience!
 
