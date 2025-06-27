@@ -114,41 +114,78 @@ fi
 
 # --- Step 4: GitHub Authentication Setup ---
 echo -e "\n🔐 GitHub Authentication Setup"
-read -p "Enter your GitHub username: " gh_user
 
-echo -e "\n👉 Go to https://github.com/settings/tokens and generate a token with 'repo' scope"
-read -s -p "Enter your GitHub Personal Access Token (PAT): " gh_token
-echo ""
+# Keep prompting until authentication succeeds
+while true; do
+    # Clear previous values
+    unset gh_user gh_token
 
-# Backup existing .netrc if it exists
-if [ -f "$NETRC_FILE" ]; then
-    echo "📑 Backing up existing .netrc file..."
-    cp "$NETRC_FILE" "${NETRC_FILE}.backup"
-fi
+    # Get username with validation
+    while [ -z "$gh_user" ]; do
+        read -p "Enter your GitHub username: " gh_user
+        if [ -z "$gh_user" ]; then
+            echo "❌ Username cannot be empty. Please try again."
+        fi
+    done
 
-# Create .netrc with proper permissions
-touch "$NETRC_FILE"
-chmod 600 "$NETRC_FILE"
-chmod 700 "$(dirname "$NETRC_FILE")"
+    echo -e "\n👉 Go to https://github.com/settings/tokens and generate a token with 'repo' scope"
+    
+    # Get token with validation
+    while [ -z "$gh_token" ]; do
+        read -s -p "Enter your GitHub Personal Access Token (PAT): " gh_token
+        echo
+        if [ -z "$gh_token" ]; then
+            echo "❌ Token cannot be empty. Please try again."
+        fi
+    done
 
-# Save credentials
-{
-    echo "machine api.github.com"
-    echo "login $gh_user"
-    echo "password $gh_token"
-} > "$NETRC_FILE"
+    # Backup existing .netrc if it exists
+    if [ -f "$NETRC_FILE" ]; then
+        echo "📑 Backing up existing .netrc file..."
+        cp "$NETRC_FILE" "${NETRC_FILE}.backup"
+    fi
 
-# Save username for CLI use
-mkdir -p "$(dirname "$REPO_CLI_CONFIG")"
-echo "GITHUB_USER=$gh_user" > "$REPO_CLI_CONFIG"
-chmod 600 "$REPO_CLI_CONFIG"
+    # Create .netrc with proper permissions
+    mkdir -p "$(dirname "$NETRC_FILE")"
+    touch "$NETRC_FILE"
+    chmod 600 "$NETRC_FILE"
+    chmod 700 "$(dirname "$NETRC_FILE")"
 
-# Verify the token works
-echo "🔍 Verifying GitHub token..."
-if ! curl -s -f --netrc https://api.github.com/user >/dev/null; then
-    echo "❌ Failed to authenticate with GitHub. Please check your token and try again"
-    exit 1
-fi
+    # Save credentials
+    {
+        echo "machine api.github.com"
+        echo "login $gh_user"
+        echo "password $gh_token"
+    } > "$NETRC_FILE"
+
+    # Save username for CLI use
+    mkdir -p "$(dirname "$REPO_CLI_CONFIG")"
+    echo "GITHUB_USER=$gh_user" > "$REPO_CLI_CONFIG"
+    chmod 600 "$REPO_CLI_CONFIG"
+
+    # Verify the token works
+    echo "🔍 Verifying GitHub token..."
+    if curl -s -f --netrc https://api.github.com/user >/dev/null; then
+        echo "✅ GitHub authentication successful!"
+        break
+    else
+        echo "❌ Failed to authenticate with GitHub. Please check your credentials and try again."
+        echo "ℹ️  Make sure your token has the 'repo' scope enabled."
+        read -p "Would you like to try again? [Y/n] " retry
+        if [[ "$retry" =~ ^[Nn] ]]; then
+            echo "❌ Setup cancelled. Please run the script again when you have valid GitHub credentials."
+            exit 1
+        fi
+        echo
+    fi
+done
 
 echo -e "\n✅ Setup complete!"
 echo "🎉 You can now run: repo help"
+
+# Remind about shell restart if PATH was modified
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    echo -e "\n⚠️  Important: You need to restart your shell or run:"
+    echo "    source ~/.bashrc"
+    echo "to use the 'repo' command."
+fi
