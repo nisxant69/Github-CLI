@@ -144,9 +144,6 @@ fi
 echo -e "\n🔐 GitHub Authentication Setup"
 
 get_github_credentials() {
-    local prompt_user=true
-    local prompt_token=true
-
     # Check if credentials already exist and are valid
     if [ -f "$NETRC_FILE" ] && [ -f "$REPO_CLI_CONFIG" ]; then
         echo "🔍 Found existing credentials, verifying..."
@@ -159,25 +156,27 @@ get_github_credentials() {
     fi
 
     while true; do
-        if [ "$prompt_user" = true ]; then
-            read -p "Enter your GitHub username: " gh_user
+        # Get GitHub username
+        gh_user=""
+        while [ -z "$gh_user" ]; do
+            read -r -p "Enter your GitHub username: " gh_user
             if [ -z "$gh_user" ]; then
                 echo "❌ Username cannot be empty. Please try again."
-                continue
+                sleep 1  # Add a small delay to prevent flooding
             fi
-            prompt_user=false
-        fi
+        done
 
-        if [ "$prompt_token" = true ]; then
-            echo -e "\n👉 Go to https://github.com/settings/tokens and generate a token with 'repo' scope"
-            read -s -p "Enter your GitHub Personal Access Token (PAT): " gh_token
+        # Get GitHub token
+        echo -e "\n👉 Go to https://github.com/settings/tokens and generate a token with 'repo' scope"
+        gh_token=""
+        while [ -z "$gh_token" ]; do
+            read -r -s -p "Enter your GitHub Personal Access Token (PAT): " gh_token
             echo
             if [ -z "$gh_token" ]; then
                 echo "❌ Token cannot be empty. Please try again."
-                continue
+                sleep 1  # Add a small delay to prevent flooding
             fi
-            prompt_token=false
-        fi
+        done
 
         # Backup existing .netrc if it exists
         if [ -f "$NETRC_FILE" ]; then
@@ -211,13 +210,11 @@ get_github_credentials() {
         else
             echo "❌ Failed to authenticate with GitHub. Please check your credentials and try again."
             echo "ℹ️  Make sure your token has the 'repo' scope enabled."
-            read -p "Would you like to try again? [Y/n] " retry
+            read -r -p "Would you like to try again? [Y/n] " retry
             if [[ "$retry" =~ ^[Nn] ]]; then
                 echo "❌ Setup cancelled. Please run the script again when you have valid GitHub credentials."
                 exit 1
             fi
-            prompt_user=true
-            prompt_token=true
             echo
         fi
     done
