@@ -21,12 +21,16 @@ check_dependencies() {
         else
             case $dep in
                 "curl")
-                    if ! curl --version | grep -q "^curl [7-9]"; then
+                    local curl_version
+                    curl_version=$(curl --version | head -n1 | sed 's/curl \([0-9]*\).*/\1/' 2>/dev/null)
+                    if [ -n "$curl_version" ] && [ "$curl_version" -lt 7 ]; then
                         echo "Warning: curl version 7.0.0 or higher is recommended"
                     fi
                     ;;
                 "jq")
-                    if ! jq --version | grep -q "^jq-[1-9]"; then
+                    local jq_version
+                    jq_version=$(jq --version 2>/dev/null | sed 's/jq-\([0-9]*\).*/\1/')
+                    if [ -n "$jq_version" ] && [ "$jq_version" -lt 1 ]; then
                         echo "Warning: jq version 1.0 or higher is recommended"
                     fi
                     ;;
@@ -45,7 +49,7 @@ spinner() {
     local delay=0.1
     local spinstr='|/-\'
     printf " "
-    while kill -0 $pid 2>/dev/null; do
+    while kill -0 "$pid" 2>/dev/null; do
         for ((i=0; i<${#spinstr}; i++)); do
             printf "\b${spinstr:i:1}"
             sleep $delay
@@ -99,7 +103,7 @@ check_credentials() {
 
 check_token_scopes() {
     local response
-    response=$(curl -sI --netrc -H "Accept: application/vnd.github.v3+json" https://api.github.com/user)
+    response=$(curl -sI --netrc -H "Accept: application/vnd.github.v3+json" https://api.github.com/user 2>/dev/null)
     if [ $? -ne 0 ]; then
         echo "Error: Failed to check token scopes. Network error?"
         return 1
@@ -108,8 +112,12 @@ check_token_scopes() {
         echo "Error: API rate limit exceeded or token invalid"
         return 1
     fi
+    if echo "$response" | grep -q "^HTTP/[0-9\.]* 401"; then
+        echo "Error: Invalid or expired token"
+        return 1
+    fi
     
-    scopes=$(echo "$response" | grep -i '^x-oauth-scopes:' | cut -d' ' -f2- | tr -d '\r')
+    scopes=$(echo "$response" | grep -i '^x-oauth-scopes:' | cut -d' ' -f2- | tr -d '\r\n')
     required_scopes=("repo")
     local missing_scopes=()
     for scope in "${required_scopes[@]}"; do
@@ -119,6 +127,7 @@ check_token_scopes() {
     done
     if [ ${#missing_scopes[@]} -ne 0 ]; then
         echo "Warning: Your GitHub token is missing required scope(s): ${missing_scopes[*]}"
+        echo "Available scopes: $scopes"
         echo "Please update your token permissions."
     fi
 }
@@ -150,6 +159,19 @@ open_url() {
 }
 
 check_dependencies
+
+validate_repo_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo "Error: Invalid repository name. Only letters, numbers, dots, hyphens, and underscores are allowed."
+        return 1
+    fi
+    if [ ${#name} -gt 100 ]; then
+        echo "Error: Repository name is too long (max 100 characters)."
+        return 1
+    fi
+    return 0
+}
 
 if [ $# -lt 1 ]; then
     usage
@@ -236,6 +258,12 @@ case "$COMMAND" in
             usage
         fi
         REPO_NAME="$1"
+        
+        # Validate repository name
+        if ! validate_repo_name "$REPO_NAME"; then
+            exit 1
+        fi
+        
         shift
         
         # Default values
@@ -289,14 +317,19 @@ case "$COMMAND" in
         
         # Create repo
         echo "Creating repository '$REPO_NAME'..."
+        
+        # Properly escape JSON values
+        json_payload=$(jq -n \
+            --arg name "$REPO_NAME" \
+            --argjson private "$PRIVATE" \
+            --arg description "$DESCRIPTION" \
+            '{name: $name, private: $private, description: $description}')
+        
         response=$(curl -s --netrc -X POST \
             -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
             https://api.github.com/user/repos \
-            -d "{
-                \"name\": \"$REPO_NAME\",
-                \"private\": $PRIVATE,
-                \"description\": \"$DESCRIPTION\"
-            }")
+            -d "$json_payload")
         
         if ! echo "$response" | jq -e '.html_url' >/dev/null; then
             echo "Error creating repository:"
@@ -318,15 +351,27 @@ case "$COMMAND" in
         # Add .gitignore if specified
         if [ -n "$GITIGNORE" ]; then
             echo "Adding .gitignore template..."
-            curl -s "https://raw.githubusercontent.com/github/gitignore/master/${GITIGNORE}.gitignore" -o .gitignore
+            if ! curl -s "https://raw.githubusercontent.com/github/gitignore/master/${GITIGNORE}.gitignore" -o .gitignore; then
+                echo "Warning: Failed to download .gitignore template for $GITIGNORE"
+                rm -f .gitignore
+            elif [ ! -s .gitignore ]; then
+                echo "Warning: .gitignore template '$GITIGNORE' not found"
+                rm -f .gitignore
+            fi
         fi
         
         # Add license if specified
         if [ -n "$LICENSE" ]; then
             echo "Adding license..."
-            curl -s --netrc \
+            license_response=$(curl -s --netrc \
                 -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/licenses/$LICENSE" | jq -r '.body' > LICENSE
+                "https://api.github.com/licenses/$LICENSE" 2>/dev/null)
+            
+            if echo "$license_response" | jq -e '.body' >/dev/null 2>&1; then
+                echo "$license_response" | jq -r '.body' > LICENSE
+            else
+                echo "Warning: Failed to download license template for '$LICENSE'"
+            fi
         fi
         
         # Add README.md
@@ -336,22 +381,37 @@ case "$COMMAND" in
         # Initialize repository
         git add .
         git commit -m "Initial commit"
-        git branch -M main
+        
+        # Get default branch name from git config or use main
+        default_branch=$(git config --get init.defaultBranch 2>/dev/null || echo "main")
+        current_branch=$(git symbolic-ref --short HEAD)
+        
+        if [ "$current_branch" != "$default_branch" ]; then
+            git branch -M "$default_branch"
+        fi
+        
         git remote add origin "$clone_url"
         
         # Push if requested
         if [ "$DO_PUSH" = true ]; then
             echo "Pushing to remote repository..."
-            git push -u origin main
+            if ! git push -u origin "$default_branch"; then
+                echo "Warning: Failed to push to remote repository"
+            fi
         fi
         
         # Add topics if specified
         if [ -n "$TOPICS" ]; then
             echo "Adding topics..."
+            # Convert comma-separated topics to JSON array
+            topics_json=$(echo "$TOPICS" | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')
+            topics_payload=$(jq -n --arg topics "[$topics_json]" '{names: ($topics | fromjson)}')
+            
             curl -s --netrc -X PUT \
-                -H "Accept: application/vnd.github.mercy-preview+json" \
+                -H "Accept: application/vnd.github.v3+json" \
+                -H "Content-Type: application/json" \
                 "https://api.github.com/repos/$github_user/$REPO_NAME/topics" \
-                -d "{\"names\": [$(echo $TOPICS | sed 's/,/","/g' | sed 's/\([^"]\)/"\1/;s/\([^"]\)$/\1"/')]}}" > /dev/null
+                -d "$topics_payload" > /dev/null
         fi
         
         echo "✅ Repository created successfully!"
@@ -400,11 +460,20 @@ case "$COMMAND" in
         
         echo "Cloning $REPO into $TARGET_DIR..."
         if [ "$CLEAN" = true ]; then
-            git clone "https://github.com/$REPO" "$TARGET_DIR" && rm -rf "$TARGET_DIR/.git"
-            echo "Repository cloned and git history removed."
+            if git clone "https://github.com/$REPO" "$TARGET_DIR"; then
+                rm -rf "$TARGET_DIR/.git"
+                echo "Repository cloned and git history removed."
+            else
+                echo "Error: Failed to clone repository"
+                exit 1
+            fi
         else
-            git clone "https://github.com/$REPO" "$TARGET_DIR"
-            echo "Repository cloned successfully."
+            if git clone "https://github.com/$REPO" "$TARGET_DIR"; then
+                echo "Repository cloned successfully."
+            else
+                echo "Error: Failed to clone repository"
+                exit 1
+            fi
         fi
         ;;
 
@@ -414,9 +483,17 @@ case "$COMMAND" in
             exit 1
         fi
         
-        current_branch=$(git symbolic-ref --short HEAD)
-        if [ "$current_branch" != "main" ]; then
-            echo "Warning: You are not on the 'main' branch (current: $current_branch)"
+        # Check if there are any remotes
+        if ! git remote | grep -q .; then
+            echo "Error: No remote repositories configured"
+            exit 1
+        fi
+        
+        current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)
+        default_branch=$(git config --get init.defaultBranch 2>/dev/null || echo "main")
+        
+        if [ "$current_branch" != "$default_branch" ] && [ "$current_branch" != "master" ]; then
+            echo "Warning: You are not on the default branch (current: $current_branch)"
             read -rp "Do you want to push anyway? [y/N] " response
             if [[ ! "$response" =~ ^[Yy]$ ]]; then
                 echo "Push cancelled."
