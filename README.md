@@ -87,12 +87,29 @@ iwr -useb https://raw.githubusercontent.com/nisxant69/Github-CLI/main/install-wi
 
 ## 📖 Usage
 
-### First Time Setup
+### 🔐 First Time Setup (Authentication)
+
+When you run any repo command for the first time, the tool will automatically set up GitHub authentication:
+
 ```bash
-repo list  # This will prompt for GitHub authentication
+repo list  # Triggers interactive setup if not authenticated
 ```
 
-### Create a Repository
+**What happens:**
+1. Opens GitHub token settings page automatically
+2. Guides you through creating a Personal Access Token  
+3. Prompts for your GitHub username and token
+4. Verifies and saves credentials securely
+5. You're ready to use all commands!
+
+**Manual setup:**
+```bash
+repo setup  # Run authentication setup manually
+```
+
+### 📚 Commands
+
+#### Create a Repository
 ```bash
 # Basic repository
 repo create my-awesome-project

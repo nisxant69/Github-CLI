@@ -143,4 +143,114 @@ These new installers are:
 
 ---
 
+## 🔐 How Users Login/Authenticate
+
+The GitHub CLI tool uses **GitHub Personal Access Tokens (PAT)** for authentication. Here's how users will log in:
+
+### 🚀 **Automatic Setup (Recommended)**
+
+When users run any command for the first time (like `repo list`), the tool will automatically detect that no credentials are configured and launch an interactive setup:
+
+```bash
+# First time running any repo command
+repo list
+```
+
+**What happens:**
+1. ✅ Tool detects no credentials exist
+2. 🌐 Opens GitHub token settings page automatically 
+3. 📋 Shows step-by-step instructions
+4. 💬 Prompts for GitHub username
+5. 🔐 Prompts for Personal Access Token
+6. ✅ Verifies credentials with GitHub API
+7. 💾 Saves credentials securely to `~/.netrc`
+8. 🎉 Ready to use all commands!
+
+### 🔧 **Manual Setup**
+
+Users can also run the setup explicitly:
+
+```bash
+repo setup
+```
+
+### 📋 **Step-by-Step Process for Users:**
+
+1. **Run any repo command** (e.g., `repo list`)
+2. **Follow the interactive prompts:**
+   - Tool opens https://github.com/settings/tokens
+   - Click "Generate new token (classic)"
+   - Give it a name (e.g., "GitHub CLI Tool")  
+   - Select the `repo` scope
+   - Click "Generate token"
+   - Copy the generated token
+3. **Enter credentials when prompted:**
+   - GitHub username
+   - Personal Access Token
+4. **Tool verifies and saves credentials**
+5. **Start using all repo commands!**
+
+### 🔒 **Security Features:**
+
+- ✅ **Secure Storage**: Credentials stored in `~/.netrc` with 600 permissions
+- ✅ **Token Verification**: Validates token before saving
+- ✅ **Scope Checking**: Ensures token has required permissions
+- ✅ **Username Verification**: Confirms token matches provided username
+- ✅ **Backup**: Backs up existing `.netrc` if present
+
+### 🎯 **User Experience:**
+
+**Before (Old System):**
+```bash
+$ repo list
+No GitHub credentials found in ~/.netrc. Please run setup script.
+# User gets stuck - no setup script exists!
+```
+
+**After (New System):**
+```bash
+$ repo list
+🔐 GitHub credentials not found. Let's set them up!
+
+To use this GitHub CLI tool, you need a Personal Access Token (PAT).
+
+📋 Follow these steps:
+1. Go to: https://github.com/settings/tokens
+2. Click 'Generate new token (classic)'
+3. Give it a name like 'GitHub CLI Tool'
+4. Select the 'repo' scope (full control of private repositories)
+5. Click 'Generate token'
+6. Copy the generated token
+
+🌐 Opening GitHub token settings page...
+
+Enter your GitHub username: myusername
+Enter your GitHub Personal Access Token: [hidden]
+
+🔍 Verifying credentials...
+✅ Credentials verified for user: myusername
+💾 Saving credentials...
+✅ Setup complete!
+
+🎉 You can now use all repo commands:
+  repo list              # List your repositories
+  repo create <name>     # Create a new repository
+  repo clone <repo>      # Clone a repository
+```
+
+### 📱 **Commands Available:**
+
+```bash
+repo setup              # Manual authentication setup
+repo help               # Show all commands
+repo list               # List repositories (triggers setup if needed)
+repo create <name>      # Create new repository
+repo clone <repo>       # Clone repository
+repo delete <repo>      # Delete repository
+repo open <repo>        # Open in browser
+repo push               # Push changes
+```
+
+---
+
 Choose the installer that matches your operating system and enjoy using the GitHub CLI tool! 🎉
