@@ -47,7 +47,7 @@ check_dependencies() {
 spinner() {
     local pid=$1
     local delay=0.1
-    local spinstr='|/-\'
+    local spinstr='|/-\\'
     printf " "
     while kill -0 "$pid" 2>/dev/null; do
         for ((i=0; i<${#spinstr}; i++)); do
