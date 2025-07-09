@@ -291,7 +291,7 @@ if [ -f "$REPO_CLI_CONFIG" ]; then
     source "$REPO_CLI_CONFIG"
 fi
 
-github_user=${GITHUB_USER:-$(grep -A2 "machine api.github.com" "$NETRC_FILE" | grep login | awk '{print $2}')}
+github_user=${GITHUB_USER:-$(grep -A2 "machine api.github.com" "$NETRC_FILE" | grep login | awk '{print $2}' 2>/dev/null)}
 
 case "$COMMAND" in
     help)
