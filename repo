@@ -7,14 +7,29 @@ if [ -z "$BASH_VERSION" ]; then
     exit 1
 fi
 
-NETRC_FILE="${HOME:-$(getent passwd $(id -u) | cut -d: -f6)}/.netrc"
+NETRC_FILE="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}/.netrc"
 REPO_CLI_CONFIG="$HOME/.repo-cli"
+DEBUG=${DEBUG:-false}
 
 trap 'echo -e "\nOperation interrupted by user."; exit 130' SIGINT
+
+debug_log() {
+    if [ "$DEBUG" = true ]; then
+        echo "[DEBUG] $*" >&2
+    fi
+}
+
+# Improved version comparison function
+version_compare() {
+    local version="$1"
+    local required="$2"
+    printf '%s\n%s\n' "$version" "$required" | sort -V | head -n1
+}
 
 check_dependencies() {
     local deps=("curl" "jq" "git")
     local missing=()
+    
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" >/dev/null 2>&1; then
             missing+=("$dep")
@@ -22,21 +37,26 @@ check_dependencies() {
             case $dep in
                 "curl")
                     local curl_version
-                    curl_version=$(curl --version | head -n1 | sed 's/curl \([0-9]*\).*/\1/' 2>/dev/null)
-                    if [ -n "$curl_version" ] && [ "$curl_version" -lt 7 ]; then
-                        echo "Warning: curl version 7.0.0 or higher is recommended"
+                    curl_version=$(curl --version 2>/dev/null | head -n1 | sed 's/curl \([0-9.]*\).*/\1/' || echo "0.0.0")
+                    if [ -n "$curl_version" ]; then
+                        if [ "$(version_compare "$curl_version" "7.0.0")" != "7.0.0" ]; then
+                            echo "Warning: curl version 7.0.0 or higher is recommended (found: $curl_version)"
+                        fi
                     fi
                     ;;
                 "jq")
                     local jq_version
-                    jq_version=$(jq --version 2>/dev/null | sed 's/jq-\([0-9]*\).*/\1/')
-                    if [ -n "$jq_version" ] && [ "$jq_version" -lt 1 ]; then
-                        echo "Warning: jq version 1.0 or higher is recommended"
+                    jq_version=$(jq --version 2>/dev/null | sed 's/jq-\([0-9.]*\).*/\1/' || echo "0.0.0")
+                    if [ -n "$jq_version" ]; then
+                        if [ "$(version_compare "$jq_version" "1.0.0")" != "1.0.0" ]; then
+                            echo "Warning: jq version 1.0 or higher is recommended (found: $jq_version)"
+                        fi
                     fi
                     ;;
             esac
         fi
     done
+    
     if [ ${#missing[@]} -ne 0 ]; then
         echo "Error: Missing dependencies: ${missing[*]}"
         echo "Please install them and try again."
@@ -50,7 +70,7 @@ spinner() {
     local spinstr='|/-\\'
     printf " "
     while kill -0 "$pid" 2>/dev/null; do
-        for ((i=0; i<${#spinstr}; i++)); do
+        for ((i=0; i<"${#spinstr}"; i++)); do
             printf "\b${spinstr:i:1}"
             sleep $delay
         done
@@ -96,6 +116,79 @@ EOF
     exit 0
 }
 
+# Input sanitization function
+sanitize_input() {
+    local input="$1"
+    # Remove potentially dangerous characters for shell/URL contexts
+    echo "$input" | sed 's/[;&|`$(){}[\]\\]//g'
+}
+
+# Safe API call function
+safe_api_call() {
+    local url="$1"
+    local method="${2:-GET}"
+    local data="${3:-}"
+    local response
+    local http_code
+    
+    debug_log "Making API call: $method $url"
+    
+    if [ -n "$data" ]; then
+        response=$(curl -s -w "\n%{http_code}" --netrc -X "$method" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            "$url" -d "$data")
+    else
+        response=$(curl -s -w "\n%{http_code}" --netrc -X "$method" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$url")
+    fi
+    
+    local curl_exit_code=$?
+    if [ $curl_exit_code -ne 0 ]; then
+        echo "Error: Network request failed (curl exit code: $curl_exit_code)"
+        return 1
+    fi
+    
+    http_code=$(echo "$response" | tail -n1)
+    response=$(echo "$response" | head -n -1)
+    
+    debug_log "HTTP response code: $http_code"
+    
+    case $http_code in
+        200|201|204)
+            echo "$response"
+            return 0
+            ;;
+        401)
+            echo "Error: Unauthorized. Please check your GitHub token."
+            return 1
+            ;;
+        403)
+            echo "Error: Forbidden. API rate limit exceeded or insufficient permissions."
+            return 1
+            ;;
+        404)
+            echo "Error: Not found. Repository or resource doesn't exist."
+            return 1
+            ;;
+        422)
+            echo "Error: Validation failed."
+            if command -v jq >/dev/null 2>&1; then
+                echo "$response" | jq -r '.message // "Unknown validation error"'
+            else
+                echo "$response"
+            fi
+            return 1
+            ;;
+        *)
+            echo "Error: HTTP $http_code"
+            echo "$response"
+            return 1
+            ;;
+    esac
+}
+
 check_credentials() {
     if ! grep -q "machine api.github.com" "$NETRC_FILE" 2>/dev/null; then
         echo "🔐 GitHub credentials not found. Let's set them up!"
@@ -121,32 +214,56 @@ setup_credentials() {
     open_url "https://github.com/settings/tokens"
     echo ""
     
-    # Get username
+    # Get username with validation
+    local github_username
     while true; do
         echo -n "Enter your GitHub username: "
         read -r github_username
-        if [ -n "$github_username" ]; then
+        github_username=$(sanitize_input "$github_username")
+        if [ -n "$github_username" ] && [[ "$github_username" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$ ]]; then
             break
         fi
-        echo "Username cannot be empty. Please try again."
+        echo "Invalid username. GitHub usernames must be 1-39 characters, alphanumeric or hyphens, and cannot start/end with hyphens."
     done
     
-    # Get token
+    # Get token with validation
+    local github_token
     while true; do
         echo -n "Enter your GitHub Personal Access Token: "
         read -r -s github_token
         echo ""
-        if [ -n "$github_token" ]; then
+        github_token=$(sanitize_input "$github_token")
+        if [ -n "$github_token" ] && [ ${#github_token} -ge 20 ]; then
             break
         fi
-        echo "Token cannot be empty. Please try again."
+        echo "Invalid token. GitHub tokens are typically 40+ characters long."
     done
     
     # Verify credentials
     echo ""
     echo "🔍 Verifying credentials..."
+    
+    # Create temporary netrc for testing
+    local temp_netrc
+    temp_netrc=$(mktemp)
+    trap 'rm -f "$temp_netrc"' EXIT
+    
+    {
+        echo "machine api.github.com"
+        echo "  login $github_username"
+        echo "  password $github_token"
+    } > "$temp_netrc"
+    chmod 600 "$temp_netrc"
+    
+    # Test credentials
     local test_response
-    test_response=$(curl -s -H "Authorization: token $github_token" https://api.github.com/user 2>/dev/null)
+    test_response=$(curl -s --netrc-file "$temp_netrc" -H "Accept: application/vnd.github.v3+json" https://api.github.com/user 2>/dev/null)
+    local curl_exit_code=$?
+    
+    if [ $curl_exit_code -ne 0 ]; then
+        echo "❌ Network error. Please check your internet connection."
+        exit 1
+    fi
     
     if echo "$test_response" | jq -e '.login' >/dev/null 2>&1; then
         local api_username
@@ -172,32 +289,43 @@ setup_credentials() {
         exit 1
     fi
     
-    # Create .netrc file
+    # Create .netrc file atomically
     echo ""
     echo "💾 Saving credentials..."
     
     # Backup existing .netrc if it exists
     if [ -f "$NETRC_FILE" ]; then
-        cp "$NETRC_FILE" "$NETRC_FILE.backup.$(date +%Y%m%d_%H%M%S)"
-        echo "📋 Backed up existing .netrc file"
+        local backup_file="$NETRC_FILE.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$NETRC_FILE" "$backup_file"
+        chmod 600 "$backup_file"
+        echo "📋 Backed up existing .netrc file to $backup_file"
     fi
     
     # Create directory if it doesn't exist
     mkdir -p "$(dirname "$NETRC_FILE")"
     
-    # Write credentials to .netrc
+    # Create new temporary netrc and move it atomically
+    local final_netrc
+    final_netrc=$(mktemp)
+    
     {
+        # Preserve existing entries if they exist
+        if [ -f "$NETRC_FILE" ]; then
+            grep -v "machine api.github.com" "$NETRC_FILE" 2>/dev/null || true
+        fi
         echo "machine api.github.com"
         echo "  login $github_username"
         echo "  password $github_token"
         echo ""
-    } >> "$NETRC_FILE"
+    } > "$final_netrc"
     
-    # Set secure permissions
-    chmod 600 "$NETRC_FILE"
+    # Set secure permissions and move
+    chmod 600 "$final_netrc"
+    mv "$final_netrc" "$NETRC_FILE"
     
     # Save username to config
     echo "GITHUB_USER=\"$github_username\"" > "$REPO_CLI_CONFIG"
+    chmod 600 "$REPO_CLI_CONFIG"
     
     echo "✅ Setup complete!"
     echo ""
@@ -211,27 +339,34 @@ setup_credentials() {
 check_token_scopes() {
     local response
     response=$(curl -sI --netrc -H "Accept: application/vnd.github.v3+json" https://api.github.com/user 2>/dev/null)
-    if [ $? -ne 0 ]; then
+    local curl_exit_code=$?
+    
+    if [ $curl_exit_code -ne 0 ]; then
         echo "Error: Failed to check token scopes. Network error?"
         return 1
     fi
-    if echo "$response" | grep -q "^HTTP/[0-9\.]* 403"; then
+    
+    if echo "$response" | grep -q "^HTTP/[0-9.]* 403"; then
         echo "Error: API rate limit exceeded or token invalid"
         return 1
     fi
-    if echo "$response" | grep -q "^HTTP/[0-9\.]* 401"; then
+    
+    if echo "$response" | grep -q "^HTTP/[0-9.]* 401"; then
         echo "Error: Invalid or expired token"
         return 1
     fi
     
-    scopes=$(echo "$response" | grep -i '^x-oauth-scopes:' | cut -d' ' -f2- | tr -d '\r\n')
-    required_scopes=("repo")
+    local scopes
+    scopes=$(echo "$response" | grep -i '^x-oauth-scopes:' | cut -d' ' -f2- | tr -d '\r\n' || echo "")
+    local required_scopes=("repo")
     local missing_scopes=()
+    
     for scope in "${required_scopes[@]}"; do
         if ! echo "$scopes" | grep -qw "$scope"; then
             missing_scopes+=("$scope")
         fi
     done
+    
     if [ ${#missing_scopes[@]} -ne 0 ]; then
         echo "Warning: Your GitHub token is missing required scope(s): ${missing_scopes[*]}"
         echo "Available scopes: $scopes"
@@ -243,23 +378,25 @@ open_url() {
     local url="$1"
     echo -n "Opening $url ..."
     
+    local browser_cmd=""
     if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$url" >/dev/null 2>&1 &
+        browser_cmd="xdg-open"
     elif command -v sensible-browser >/dev/null 2>&1; then
-        sensible-browser "$url" >/dev/null 2>&1 &
+        browser_cmd="sensible-browser"
     elif command -v x-www-browser >/dev/null 2>&1; then
-        x-www-browser "$url" >/dev/null 2>&1 &
+        browser_cmd="x-www-browser"
     elif command -v open >/dev/null 2>&1; then
-        open "$url" >/dev/null 2>&1 &
+        browser_cmd="open"
     elif command -v start >/dev/null 2>&1; then
-        start "$url" >/dev/null 2>&1 &
+        browser_cmd="start"
     else
         echo
         echo "Cannot open browser automatically. Open manually: $url"
         return
     fi
     
-    pid=$!
+    $browser_cmd "$url" >/dev/null 2>&1 &
+    local pid=$!
     spinner $pid
     wait $pid
     echo " Done."
@@ -277,6 +414,10 @@ validate_repo_name() {
         echo "Error: Repository name is too long (max 100 characters)."
         return 1
     fi
+    if [[ "$name" =~ ^[.-] ]] || [[ "$name" =~ [.-]$ ]]; then
+        echo "Error: Repository name cannot start or end with a dot or hyphen."
+        return 1
+    fi
     return 0
 }
 
@@ -291,7 +432,7 @@ if [ -f "$REPO_CLI_CONFIG" ]; then
     source "$REPO_CLI_CONFIG"
 fi
 
-github_user=${GITHUB_USER:-$(grep -A2 "machine api.github.com" "$NETRC_FILE" | grep login | awk '{print $2}' 2>/dev/null)}
+github_user=${GITHUB_USER:-$(grep -A2 "machine api.github.com" "$NETRC_FILE" 2>/dev/null | grep login | awk '{print $2}' || echo "")}
 
 case "$COMMAND" in
     help)
@@ -309,23 +450,27 @@ case "$COMMAND" in
             echo "Please provide repository name to delete."
             usage
         fi
-        REPO_NAME="$1"
+        REPO_NAME=$(sanitize_input "$1")
+        if ! validate_repo_name "$REPO_NAME"; then
+            exit 1
+        fi
+        
         check_credentials
         check_token_scopes
+        
         echo "WARNING: This will permanently delete '$github_user/$REPO_NAME'."
         read -rp "Type 'yes' to confirm: " confirm
         if [[ "$confirm" != "yes" ]]; then
             echo "Deletion cancelled."
             exit 0
         fi
+        
         echo -n "Deleting repo '$github_user/$REPO_NAME'..."
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" --netrc -X DELETE "https://api.github.com/repos/$github_user/$REPO_NAME")
-        if [[ "$http_code" == "204" ]]; then
+        if safe_api_call "https://api.github.com/repos/$github_user/$REPO_NAME" "DELETE" >/dev/null; then
             echo " Done."
             echo "Repository deleted."
         else
             echo " Failed."
-            echo "HTTP code: $http_code"
             exit 1
         fi
         ;;
@@ -335,7 +480,11 @@ case "$COMMAND" in
             echo "Please provide repository name to open."
             usage
         fi
-        REPO_NAME="$1"
+        REPO_NAME=$(sanitize_input "$1")
+        if ! validate_repo_name "$REPO_NAME"; then
+            exit 1
+        fi
+        
         check_credentials
         repo_url="https://github.com/$github_user/$REPO_NAME"
         open_url "$repo_url"
@@ -344,22 +493,28 @@ case "$COMMAND" in
     list)
         check_credentials
         echo "Fetching repos for $github_user..."
-        page=1
-        per_page=100
+        local page=1
+        local per_page=100
+        
         while :; do
-            response=$(curl -s --netrc "https://api.github.com/user/repos?per_page=$per_page&page=$page")
+            local response
+            response=$(safe_api_call "https://api.github.com/user/repos?per_page=$per_page&page=$page")
             if [ $? -ne 0 ]; then
-                echo "Error: Failed to fetch repositories"
+                echo "Error: Failed to fetch repositories for user '$github_user'"
                 exit 1
             fi
-            if echo "$response" | jq -e 'type != "array"' >/dev/null; then
+            
+            if ! echo "$response" | jq -e 'type == "array"' >/dev/null 2>&1; then
                 echo "Error: Invalid response from GitHub API"
                 exit 1
             fi
+            
+            local repo_count
             repo_count=$(echo "$response" | jq '. | length')
             if [[ $repo_count -eq 0 ]]; then
                 break
             fi
+            
             echo "$response" | jq -r '.[] | "\(.name) [\(.private | if . then "private" else "public" end)] - \(.description // "No description")"'
             ((page++))
         done
@@ -370,7 +525,7 @@ case "$COMMAND" in
             echo "Please provide repository name to create."
             usage
         fi
-        REPO_NAME="$1"
+        REPO_NAME=$(sanitize_input "$1")
         
         # Validate repository name
         if ! validate_repo_name "$REPO_NAME"; then
@@ -396,23 +551,28 @@ case "$COMMAND" in
                     ;;
                 --desc)
                     shift
-                    DESCRIPTION="$1"
+                    DESCRIPTION=$(sanitize_input "$1")
                     ;;
                 --gitignore)
                     shift
-                    GITIGNORE="$1"
+                    GITIGNORE=$(sanitize_input "$1")
                     ;;
                 --license)
                     shift
-                    LICENSE="$1"
+                    LICENSE=$(sanitize_input "$1")
                     ;;
                 --topics)
                     shift
-                    TOPICS="$1"
+                    TOPICS=$(sanitize_input "$1")
                     ;;
                 -d)
                     shift
                     BASE_DIR="$1"
+                    # Validate directory path
+                    if [[ "$BASE_DIR" =~ \.\. ]] || [[ "$BASE_DIR" =~ ^/ ]]; then
+                        echo "Error: Invalid directory path"
+                        exit 1
+                    fi
                     ;;
                 -push)
                     DO_PUSH=true
@@ -431,30 +591,29 @@ case "$COMMAND" in
         # Create repo
         echo "Creating repository '$REPO_NAME'..."
         
-        # Properly escape JSON values
+        # Properly construct JSON payload
+        local json_payload
         json_payload=$(jq -n \
             --arg name "$REPO_NAME" \
             --argjson private "$PRIVATE" \
             --arg description "$DESCRIPTION" \
             '{name: $name, private: $private, description: $description}')
         
-        response=$(curl -s --netrc -X POST \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/user/repos \
-            -d "$json_payload")
-        
-        if ! echo "$response" | jq -e '.html_url' >/dev/null; then
-            echo "Error creating repository:"
-            echo "$response" | jq -r '.message'
+        local response
+        response=$(safe_api_call "https://api.github.com/user/repos" "POST" "$json_payload")
+        if [ $? -ne 0 ]; then
+            echo "Error creating repository"
             exit 1
         fi
         
+        local repo_url clone_url
         repo_url=$(echo "$response" | jq -r '.html_url')
         clone_url=$(echo "$response" | jq -r '.clone_url')
         
         # Create local repository
-        mkdir -p "$BASE_DIR"
+        if [ ! -d "$BASE_DIR" ]; then
+            mkdir -p "$BASE_DIR"
+        fi
         cd "$BASE_DIR"
         
         echo "Initializing local repository..."
@@ -476,11 +635,10 @@ case "$COMMAND" in
         # Add license if specified
         if [ -n "$LICENSE" ]; then
             echo "Adding license..."
-            license_response=$(curl -s --netrc \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/licenses/$LICENSE" 2>/dev/null)
+            local license_response
+            license_response=$(safe_api_call "https://api.github.com/licenses/$LICENSE")
             
-            if echo "$license_response" | jq -e '.body' >/dev/null 2>&1; then
+            if [ $? -eq 0 ] && echo "$license_response" | jq -e '.body' >/dev/null 2>&1; then
                 echo "$license_response" | jq -r '.body' > LICENSE
             else
                 echo "Warning: Failed to download license template for '$LICENSE'"
@@ -496,6 +654,7 @@ case "$COMMAND" in
         git commit -m "Initial commit"
         
         # Get default branch name from git config or use main
+        local default_branch current_branch
         default_branch=$(git config --get init.defaultBranch 2>/dev/null || echo "main")
         current_branch=$(git symbolic-ref --short HEAD)
         
@@ -516,15 +675,13 @@ case "$COMMAND" in
         # Add topics if specified
         if [ -n "$TOPICS" ]; then
             echo "Adding topics..."
-            # Convert comma-separated topics to JSON array
-            topics_json=$(echo "$TOPICS" | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')
-            topics_payload=$(jq -n --arg topics "[$topics_json]" '{names: ($topics | fromjson)}')
+            # Use jq to properly construct JSON array
+            local topics_json
+            topics_json=$(echo "$TOPICS" | jq -R 'split(",") | map(select(. != "") | gsub("[^a-zA-Z0-9-]"; ""))')
+            local topics_payload
+            topics_payload=$(jq -n --argjson topics "$topics_json" '{names: $topics}')
             
-            curl -s --netrc -X PUT \
-                -H "Accept: application/vnd.github.v3+json" \
-                -H "Content-Type: application/json" \
-                "https://api.github.com/repos/$github_user/$REPO_NAME/topics" \
-                -d "$topics_payload" > /dev/null
+            safe_api_call "https://api.github.com/repos/$github_user/$REPO_NAME/topics" "PUT" "$topics_payload" >/dev/null
         fi
         
         echo "✅ Repository created successfully!"
@@ -538,7 +695,7 @@ case "$COMMAND" in
             usage
         fi
         
-        REPO="$1"
+        REPO=$(sanitize_input "$1")
         shift
         TARGET_DIR=""
         CLEAN=false
@@ -566,9 +723,21 @@ case "$COMMAND" in
             REPO="$github_user/$REPO"
         fi
         
+        # Validate repo format
+        if [[ ! "$REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+            echo "Error: Invalid repository format. Use 'username/repository'"
+            exit 1
+        fi
+        
         # Set target directory if not specified
         if [ -z "$TARGET_DIR" ]; then
             TARGET_DIR="${REPO##*/}"
+        fi
+        
+        # Validate target directory
+        if [ -e "$TARGET_DIR" ]; then
+            echo "Error: Directory '$TARGET_DIR' already exists"
+            exit 1
         fi
         
         echo "Cloning $REPO into $TARGET_DIR..."
@@ -602,6 +771,13 @@ case "$COMMAND" in
             exit 1
         fi
         
+        # Check for uncommitted changes
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "Error: You have uncommitted changes. Please commit or stash them first."
+            exit 1
+        fi
+        
+        local current_branch default_branch
         current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)
         default_branch=$(git config --get init.defaultBranch 2>/dev/null || echo "main")
         
