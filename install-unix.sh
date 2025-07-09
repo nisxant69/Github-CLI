@@ -1,51 +1,86 @@
 #!/bin/bash
-# GitHub CLI Tool - Mac/Linux Universal Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/nisxant69/Github-CLI/main/install-unix.sh | bash
+# GitHub CLI Tool - Mac/Linux Universal Installer (Security Enhanced)
+# Usage: Download and run locally for security
+# curl -fsSL https://raw.githubusercontent.com/nisxant69/Github-CLI/main/install-unix.sh -o install-unix.sh && bash install-unix.sh
 
-set -e
+set -euo pipefail
 
 # Colors for beautiful output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-WHITE='\033[1;37m'
-NC='\033[0m' # No Color
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly WHITE='\033[1;37m'
+readonly NC='\033[0m' # No Color
 
-# Logging functions with emojis
-log() { echo -e "${GREEN}✅${NC} $1"; }
-warn() { echo -e "${YELLOW}⚠️${NC} $1"; }
-error() { echo -e "${RED}❌${NC} $1"; }
-info() { echo -e "${BLUE}ℹ️${NC} $1"; }
-header() { echo -e "${CYAN}$1${NC}"; }
+# Global configuration
+readonly GITHUB_REPO="nisxant69/Github-CLI"
+readonly REPO_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
+readonly BIN_NAME="repo"
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly TEMP_DIR="$(mktemp -d)"
 
-# Configuration
-GITHUB_REPO="nisxant69/Github-CLI"
-REPO_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
-BIN_NAME="repo"
+# Global state variables
 INSTALL_DIR=""
 USE_SUDO=false
+OS=""
+DISTRO=""
+PROFILE_UPDATED=false
 
-# Display header
-clear
-echo ""
-header "🚀 GitHub CLI Tool - Mac/Linux Installer"
-header "========================================"
-echo ""
+# Cleanup function
+cleanup() {
+    local exit_code=$?
+    if [[ -d "$TEMP_DIR" ]]; then
+        rm -rf "$TEMP_DIR"
+    fi
+    if [[ $exit_code -ne 0 ]]; then
+        error "Installation failed. Cleaned up temporary files."
+        if [[ -n "$INSTALL_DIR" && -f "$INSTALL_DIR/$BIN_NAME" ]]; then
+            warn "Partial installation detected. You may want to remove: $INSTALL_DIR/$BIN_NAME"
+        fi
+    fi
+}
 
-# Detect operating system
+# Set up cleanup trap
+trap cleanup EXIT
+trap 'echo ""; error "Installation interrupted by user"; exit 130' INT TERM
+
+# Logging functions with emojis
+log() { echo -e "${GREEN}✅${NC} $1" >&2; }
+warn() { echo -e "${YELLOW}⚠️${NC} $1" >&2; }
+error() { echo -e "${RED}❌${NC} $1" >&2; }
+info() { echo -e "${BLUE}ℹ️${NC} $1" >&2; }
+header() { echo -e "${CYAN}$1${NC}" >&2; }
+
+# Utility functions
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+is_root() {
+    [[ "$EUID" -eq 0 ]]
+}
+
+can_sudo() {
+    command_exists sudo && sudo -n true 2>/dev/null
+}
+
+# Detect operating system with better logic
 detect_os() {
+    info "🔍 Detecting operating system..."
+    
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if [[ -n "$WSL_DISTRO_NAME" ]]; then
+        if [[ -n "${WSL_DISTRO_NAME:-}" || -n "${WSL_INTEROP:-}" ]]; then
             OS="wsl"
-            DISTRO="WSL: $WSL_DISTRO_NAME"
-            info "🪟 Windows Subsystem for Linux detected: $WSL_DISTRO_NAME"
+            DISTRO="WSL: ${WSL_DISTRO_NAME:-Unknown}"
+            info "🪟 Windows Subsystem for Linux detected: ${WSL_DISTRO_NAME:-Unknown}"
         else
             OS="linux"
-            if [ -f /etc/os-release ]; then
-                . /etc/os-release
-                DISTRO="$PRETTY_NAME"
+            if [[ -f /etc/os-release ]]; then
+                # shellcheck source=/dev/null
+                source /etc/os-release
+                DISTRO="${PRETTY_NAME:-${NAME:-Unknown Linux}}"
             else
                 DISTRO="Unknown Linux"
             fi
@@ -53,7 +88,9 @@ detect_os() {
         fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         OS="macos"
-        DISTRO="macOS $(sw_vers -productVersion 2>/dev/null || echo 'Unknown')"
+        local version
+        version=$(sw_vers -productVersion 2>/dev/null || echo 'Unknown')
+        DISTRO="macOS $version"
         info "🍎 macOS detected: $DISTRO"
     elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
         OS="windows"
@@ -67,18 +104,19 @@ detect_os() {
     fi
 }
 
-# Determine the best installation directory
+# Determine installation directory with better logic
 set_install_dir() {
-    # Check if we have global installation privileges
-    if [[ "$EUID" -eq 0 ]] || (command -v sudo >/dev/null && sudo -n true 2>/dev/null); then
-        # Can install globally
+    info "📁 Determining installation directory..."
+    
+    # Check for global installation capability
+    if is_root || can_sudo; then
         case "$OS" in
             "macos")
-                if command -v brew >/dev/null; then
-                    INSTALL_DIR="/opt/homebrew/bin"
-                    if [[ ! -d "/opt/homebrew/bin" ]]; then
-                        INSTALL_DIR="/usr/local/bin"
-                    fi
+                # Check for Homebrew and determine correct path
+                if command_exists brew; then
+                    local brew_prefix
+                    brew_prefix=$(brew --prefix 2>/dev/null || echo "/usr/local")
+                    INSTALL_DIR="$brew_prefix/bin"
                 else
                     INSTALL_DIR="/usr/local/bin"
                 fi
@@ -93,7 +131,12 @@ set_install_dir() {
         # User installation
         INSTALL_DIR="$HOME/.local/bin"
         USE_SUDO=false
-        mkdir -p "$INSTALL_DIR"
+        
+        # Create directory if it doesn't exist
+        if ! mkdir -p "$INSTALL_DIR"; then
+            error "Failed to create installation directory: $INSTALL_DIR"
+            exit 1
+        fi
     fi
     
     info "📁 Installation directory: $INSTALL_DIR"
@@ -104,7 +147,7 @@ set_install_dir() {
     fi
 }
 
-# Check if required dependencies are available
+# Check dependencies with better error handling
 check_dependencies() {
     info "🔍 Checking required dependencies..."
     
@@ -112,28 +155,28 @@ check_dependencies() {
     local missing=()
     
     for dep in "${deps[@]}"; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
+        if ! command_exists "$dep"; then
             missing+=("$dep")
         fi
     done
     
-    if [ ${#missing[@]} -ne 0 ]; then
+    if [[ ${#missing[@]} -ne 0 ]]; then
         error "Missing required dependencies: ${missing[*]}"
-        echo ""
-        echo "Please install them first:"
+        echo "" >&2
+        echo "Please install them first:" >&2
         case "$OS" in
             "linux"|"wsl")
-                echo "  • Ubuntu/Debian: sudo apt update && sudo apt install -y ${missing[*]}"
-                echo "  • RHEL/Fedora:   sudo dnf install -y ${missing[*]}"
-                echo "  • Arch Linux:    sudo pacman -S --noconfirm ${missing[*]}"
-                echo "  • Alpine:        sudo apk add ${missing[*]}"
+                echo "  • Ubuntu/Debian: sudo apt update && sudo apt install -y ${missing[*]}" >&2
+                echo "  • RHEL/Fedora:   sudo dnf install -y ${missing[*]}" >&2
+                echo "  • Arch Linux:    sudo pacman -S --noconfirm ${missing[*]}" >&2
+                echo "  • Alpine:        sudo apk add ${missing[*]}" >&2
                 ;;
             "macos")
-                echo "  • Using Homebrew: brew install ${missing[*]}"
-                echo "  • Or install Xcode Command Line Tools: xcode-select --install"
+                echo "  • Using Homebrew: brew install ${missing[*]}" >&2
+                echo "  • Or install Xcode Command Line Tools: xcode-select --install" >&2
                 ;;
             *)
-                echo "  • Please install using your system's package manager"
+                echo "  • Please install using your system's package manager" >&2
                 ;;
         esac
         exit 1
@@ -142,228 +185,350 @@ check_dependencies() {
     log "All required dependencies are available"
 }
 
-# Install jq for JSON processing (optional but recommended)
+# Install jq with better error handling
 install_jq() {
-    if command -v jq >/dev/null 2>&1; then
+    if command_exists jq; then
         log "jq is already installed"
-        return
+        return 0
     fi
     
     info "📦 Installing jq (recommended for enhanced functionality)..."
     
+    local install_cmd=""
     case "$OS" in
         "linux"|"wsl")
-            if command -v apt >/dev/null && [[ "$USE_SUDO" == true ]]; then
-                sudo apt update >/dev/null 2>&1 && sudo apt install -y jq
-            elif command -v dnf >/dev/null && [[ "$USE_SUDO" == true ]]; then
-                sudo dnf install -y jq
-            elif command -v pacman >/dev/null && [[ "$USE_SUDO" == true ]]; then
-                sudo pacman -S --noconfirm jq
-            elif command -v apk >/dev/null && [[ "$USE_SUDO" == true ]]; then
-                sudo apk add jq
-            else
-                warn "Could not install jq automatically. The tool will work without it."
-                return
+            if command_exists apt && [[ "$USE_SUDO" == true ]]; then
+                install_cmd="sudo apt update -qq && sudo apt install -y jq"
+            elif command_exists dnf && [[ "$USE_SUDO" == true ]]; then
+                install_cmd="sudo dnf install -y jq"
+            elif command_exists pacman && [[ "$USE_SUDO" == true ]]; then
+                install_cmd="sudo pacman -S --noconfirm jq"
+            elif command_exists apk && [[ "$USE_SUDO" == true ]]; then
+                install_cmd="sudo apk add jq"
             fi
             ;;
         "macos")
-            if command -v brew >/dev/null; then
-                brew install jq
-            else
-                warn "Homebrew not found. Install jq manually: https://github.com/stedolan/jq"
-                return
+            if command_exists brew; then
+                install_cmd="brew install jq"
             fi
-            ;;
-        *)
-            warn "Cannot auto-install jq on this system. Install manually if needed."
-            return
             ;;
     esac
     
-    if command -v jq >/dev/null 2>&1; then
-        log "jq installed successfully"
+    if [[ -n "$install_cmd" ]]; then
+        if eval "$install_cmd" >/dev/null 2>&1; then
+            log "jq installed successfully"
+        else
+            warn "jq installation failed, but repo tool will still work"
+        fi
     else
-        warn "jq installation failed, but repo tool will still work"
+        warn "Cannot auto-install jq on this system. Install manually if needed."
     fi
 }
 
-# Download and install the main repo script
-install_repo_script() {
-    info "📥 Downloading GitHub CLI repo script..."
+# Verify downloaded file integrity
+verify_file() {
+    local file="$1"
+    local expected_type="$2"
     
-    local temp_file
-    temp_file=$(mktemp)
-    
-    # Download with progress bar if possible
-    if curl --help 2>/dev/null | grep -q "\-\-progress-bar"; then
-        if ! curl --progress-bar -fSL "${REPO_URL}/repo" -o "$temp_file"; then
-            error "Failed to download repo script from ${REPO_URL}/repo"
-            error "Please check your internet connection and try again"
-            exit 1
-        fi
-    else
-        if ! curl -fsSL "${REPO_URL}/repo" -o "$temp_file"; then
-            error "Failed to download repo script"
-            exit 1
-        fi
+    if [[ ! -s "$file" ]]; then
+        error "Downloaded file is empty or corrupted"
+        return 1
     fi
     
-    # Verify the downloaded file
-    if [ ! -s "$temp_file" ]; then
-        error "Downloaded file is empty or corrupted"
+    case "$expected_type" in
+        "bash")
+            if ! head -n1 "$file" | grep -q "#!/bin/bash"; then
+                error "Downloaded file is not a valid bash script"
+                error "File header: $(head -n1 "$file")"
+                return 1
+            fi
+            ;;
+        *)
+            error "Unknown file type for verification: $expected_type"
+            return 1
+            ;;
+    esac
+    
+    return 0
+}
+
+# Download file with better error handling
+download_file() {
+    local url="$1"
+    local output="$2"
+    
+    info "📥 Downloading from: $url"
+    
+    # Use curl with proper error handling and progress
+    local curl_opts=(-fsSL --connect-timeout 10 --max-time 300)
+    
+    # Add progress bar for interactive terminals
+    if [[ -t 1 ]] && curl --help 2>/dev/null | grep -q "\-\-progress-bar"; then
+        curl_opts+=(--progress-bar)
+    fi
+    
+    if ! curl "${curl_opts[@]}" "$url" -o "$output"; then
+        error "Failed to download from: $url"
+        error "Please check your internet connection and try again"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Install the main repo script with verification
+install_repo_script() {
+    local temp_file="$TEMP_DIR/repo_script"
+    
+    info "📥 Downloading GitHub CLI repo script..."
+    
+    if ! download_file "${REPO_URL}/repo" "$temp_file"; then
         exit 1
     fi
     
-    # Verify it's a valid bash script
-    if ! head -n1 "$temp_file" | grep -q "#!/bin/bash"; then
-        error "Downloaded file is not a valid bash script"
-        error "File contents: $(head -n3 "$temp_file")"
+    # Verify the downloaded file
+    if ! verify_file "$temp_file" "bash"; then
         exit 1
     fi
     
     info "🔧 Installing repo script..."
     
     # Install the script with appropriate permissions
-    if [ "$USE_SUDO" = true ]; then
-        sudo cp "$temp_file" "$INSTALL_DIR/$BIN_NAME"
-        sudo chmod +x "$INSTALL_DIR/$BIN_NAME"
+    if [[ "$USE_SUDO" == true ]]; then
+        if ! sudo cp "$temp_file" "$INSTALL_DIR/$BIN_NAME"; then
+            error "Failed to copy script to $INSTALL_DIR"
+            exit 1
+        fi
+        if ! sudo chmod +x "$INSTALL_DIR/$BIN_NAME"; then
+            error "Failed to make script executable"
+            exit 1
+        fi
+        # Set ownership (ignore errors for systems without root:root)
         sudo chown root:root "$INSTALL_DIR/$BIN_NAME" 2>/dev/null || true
     else
-        cp "$temp_file" "$INSTALL_DIR/$BIN_NAME"
-        chmod +x "$INSTALL_DIR/$BIN_NAME"
+        if ! cp "$temp_file" "$INSTALL_DIR/$BIN_NAME"; then
+            error "Failed to copy script to $INSTALL_DIR"
+            exit 1
+        fi
+        if ! chmod +x "$INSTALL_DIR/$BIN_NAME"; then
+            error "Failed to make script executable"
+            exit 1
+        fi
     fi
-    
-    # Clean up
-    rm -f "$temp_file"
     
     log "GitHub CLI installed to $INSTALL_DIR/$BIN_NAME"
 }
 
-# Update PATH if necessary
+# Detect current shell
+detect_shell() {
+    if [[ -n "${ZSH_VERSION:-}" ]]; then
+        echo "zsh"
+    elif [[ -n "${BASH_VERSION:-}" ]]; then
+        echo "bash"
+    else
+        # Fallback to checking $SHELL
+        basename "${SHELL:-bash}"
+    fi
+}
+
+# Update PATH with better shell detection
 update_path() {
     # Check if install directory is already in PATH
     if [[ ":$PATH:" == *":$INSTALL_DIR:"* ]]; then
         log "Installation directory is already in PATH"
-        return
+        return 0
     fi
     
     info "🔧 Adding $INSTALL_DIR to PATH..."
     
-    local profile_updated=false
+    local shell_type
+    shell_type=$(detect_shell)
+    local profile_files=()
     
+    # Determine which profile files to update based on OS and shell
     case "$OS" in
         "linux"|"wsl")
-            # Try to add to appropriate shell profile
-            if [[ -n "$ZSH_VERSION" ]] && [[ -f "$HOME/.zshrc" ]]; then
-                echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.zshrc"
-                warn "Added to ~/.zshrc - restart your shell or run: source ~/.zshrc"
-                profile_updated=true
-            elif [[ -f "$HOME/.bashrc" ]]; then
-                echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.bashrc"
-                warn "Added to ~/.bashrc - restart your shell or run: source ~/.bashrc"
-                profile_updated=true
-            fi
-            if [[ -f "$HOME/.profile" ]] && [[ "$profile_updated" == false ]]; then
-                echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.profile"
-                warn "Added to ~/.profile - restart your shell or run: source ~/.profile"
-                profile_updated=true
-            fi
+            case "$shell_type" in
+                "zsh")
+                    [[ -f "$HOME/.zshrc" ]] && profile_files+=("$HOME/.zshrc")
+                    ;;
+                "bash")
+                    [[ -f "$HOME/.bashrc" ]] && profile_files+=("$HOME/.bashrc")
+                    ;;
+            esac
+            # Always try .profile as fallback
+            [[ -f "$HOME/.profile" ]] && profile_files+=("$HOME/.profile")
             ;;
         "macos")
-            if [[ -f "$HOME/.zshrc" ]]; then
-                echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.zshrc"
-                warn "Added to ~/.zshrc - restart your shell or run: source ~/.zshrc"
-                profile_updated=true
-            elif [[ -f "$HOME/.bash_profile" ]]; then
-                echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.bash_profile"
-                warn "Added to ~/.bash_profile - restart your shell or run: source ~/.bash_profile"
-                profile_updated=true
-            fi
+            case "$shell_type" in
+                "zsh")
+                    [[ -f "$HOME/.zshrc" ]] && profile_files+=("$HOME/.zshrc")
+                    ;;
+                "bash")
+                    [[ -f "$HOME/.bash_profile" ]] && profile_files+=("$HOME/.bash_profile")
+                    [[ -f "$HOME/.bashrc" ]] && profile_files+=("$HOME/.bashrc")
+                    ;;
+            esac
             ;;
         "windows")
-            if [[ -f "$HOME/.bashrc" ]]; then
-                echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$HOME/.bashrc"
-                warn "Added to ~/.bashrc - restart Git Bash or run: source ~/.bashrc"
-                profile_updated=true
-            fi
+            [[ -f "$HOME/.bashrc" ]] && profile_files+=("$HOME/.bashrc")
             ;;
     esac
     
-    if [[ "$profile_updated" == false ]]; then
+    # Update the first available profile file
+    local path_line="export PATH=\"\$PATH:$INSTALL_DIR\""
+    for profile in "${profile_files[@]}"; do
+        # Check if PATH is already in this file
+        if ! grep -q "$INSTALL_DIR" "$profile" 2>/dev/null; then
+            if echo "$path_line" >> "$profile"; then
+                warn "Added to $(basename "$profile") - restart your shell or run: source $profile"
+                PROFILE_UPDATED=true
+                break
+            fi
+        fi
+    done
+    
+    if [[ "$PROFILE_UPDATED" == false ]]; then
         warn "Could not automatically update PATH. Please add this line to your shell profile:"
-        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        echo "  $path_line" >&2
+        echo "" >&2
+        echo "Or run the tool directly with: $INSTALL_DIR/$BIN_NAME" >&2
     fi
 }
 
-# Verify the installation worked correctly
+# Verify installation with better checks
 verify_installation() {
     info "✅ Verifying installation..."
     
-    if [ ! -x "$INSTALL_DIR/$BIN_NAME" ]; then
-        error "Installation failed - script not found or not executable at $INSTALL_DIR/$BIN_NAME"
+    if [[ ! -f "$INSTALL_DIR/$BIN_NAME" ]]; then
+        error "Installation failed - script not found at $INSTALL_DIR/$BIN_NAME"
         exit 1
     fi
     
-    # Test if the script can run
-    if ! "$INSTALL_DIR/$BIN_NAME" help >/dev/null 2>&1; then
-        warn "Script installed but may have issues. Try running: $INSTALL_DIR/$BIN_NAME help"
+    if [[ ! -x "$INSTALL_DIR/$BIN_NAME" ]]; then
+        error "Installation failed - script is not executable at $INSTALL_DIR/$BIN_NAME"
+        exit 1
+    fi
+    
+    # Test basic script functionality
+    if ! "$INSTALL_DIR/$BIN_NAME" --help >/dev/null 2>&1; then
+        # Try alternative help command
+        if ! "$INSTALL_DIR/$BIN_NAME" help >/dev/null 2>&1; then
+            warn "Script installed but may have issues. Try running: $INSTALL_DIR/$BIN_NAME help"
+        fi
     fi
     
     log "Installation verification successful!"
 }
 
-# Display success message and usage information
+# Display comprehensive success message
 show_success_message() {
-    echo ""
+    echo "" >&2
     header "🎉 GitHub CLI tool 'repo' installed successfully!"
-    echo ""
-    echo -e "${WHITE}📖 Usage Examples:${NC}"
-    echo "  repo help              Show help and available commands"
-    echo "  repo create <name>     Create a new repository"
-    echo "  repo list              List your repositories"  
-    echo "  repo clone <repo>      Clone a repository"
-    echo "  repo delete <repo>     Delete a repository"
-    echo "  repo open <repo>       Open repository in browser"
-    echo ""
-    echo -e "${WHITE}🔧 First Time Setup:${NC}"
-    echo "  1. Run 'repo list' to configure GitHub authentication"
-    echo "  2. Create a GitHub Personal Access Token if prompted"
-    echo ""
-    echo -e "${WHITE}🚀 Quick Test:${NC}"
+    echo "" >&2
+    echo -e "${WHITE}📖 Usage Examples:${NC}" >&2
+    echo "  repo help              Show help and available commands" >&2
+    echo "  repo create <name>     Create a new repository" >&2
+    echo "  repo list              List your repositories" >&2
+    echo "  repo clone <repo>      Clone a repository" >&2
+    echo "  repo delete <repo>     Delete a repository" >&2
+    echo "  repo open <repo>       Open repository in browser" >&2
+    echo "" >&2
+    echo -e "${WHITE}🔧 First Time Setup:${NC}" >&2
+    echo "  1. Run 'repo help' to see all available commands" >&2
+    echo "  2. Configure GitHub authentication when prompted" >&2
+    echo "  3. Create a GitHub Personal Access Token if needed" >&2
+    echo "" >&2
+    echo -e "${WHITE}🚀 Quick Test:${NC}" >&2
     
-    # Try to run help command if repo is in PATH
-    if command -v "$BIN_NAME" >/dev/null 2>&1; then
-        echo "  Command 'repo' is ready to use!"
-        echo ""
-        echo "  Running quick test..."
-        if "$BIN_NAME" help >/dev/null 2>&1; then
+    # Test if repo command is available
+    if command_exists "$BIN_NAME"; then
+        echo "  Command 'repo' is ready to use!" >&2
+        echo "" >&2
+        echo "  Running quick test..." >&2
+        if "$BIN_NAME" --help >/dev/null 2>&1 || "$BIN_NAME" help >/dev/null 2>&1; then
             log "✨ Test successful! The tool is working perfectly."
         else
             warn "Tool installed but may need configuration. Run 'repo help' for more info."
         fi
     else
-        echo "  Restart your shell, then run: repo help"
+        if [[ "$PROFILE_UPDATED" == true ]]; then
+            echo "  Restart your shell, then run: repo help" >&2
+        else
+            echo "  Add $INSTALL_DIR to your PATH, then run: repo help" >&2
+        fi
         warn "Or run directly: $INSTALL_DIR/$BIN_NAME help"
     fi
     
-    echo ""
+    echo "" >&2
+    echo -e "${WHITE}🔒 Security Note:${NC}" >&2
+    echo "  The tool has been installed to: $INSTALL_DIR/$BIN_NAME" >&2
+    echo "  You can inspect the script before use if needed." >&2
+    echo "" >&2
     log "🎯 Installation completed! Happy coding! 🚀"
+}
+
+# Show usage information
+show_usage() {
+    echo "Usage: $SCRIPT_NAME [OPTIONS]" >&2
+    echo "" >&2
+    echo "Options:" >&2
+    echo "  -h, --help     Show this help message" >&2
+    echo "  -v, --verbose  Enable verbose output" >&2
+    echo "" >&2
+    echo "For security, it's recommended to download and inspect this script before running:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/nisxant69/Github-CLI/main/install-unix.sh -o install-unix.sh" >&2
+    echo "  # Inspect the script" >&2
+    echo "  bash install-unix.sh" >&2
+}
+
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -v|--verbose)
+                set -x
+                shift
+                ;;
+            *)
+                error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
 }
 
 # Main installation process
 main() {
+    # Display header
+    clear
+    echo "" >&2
+    header "🚀 GitHub CLI Tool - Mac/Linux Installer (Security Enhanced)"
+    header "============================================================"
+    echo "" >&2
+    
+    # Parse command line arguments
+    parse_args "$@"
+    
+    # Run installation steps
     detect_os
-    set_install_dir  
+    set_install_dir
     check_dependencies
     install_jq
     install_repo_script
     update_path
     verify_installation
     show_success_message
+    
+    return 0
 }
 
-# Handle script interruption gracefully
-trap 'echo ""; error "Installation interrupted by user"; exit 1' INT TERM
-
-# Run the main installation
-main "$@"
+# Only run main if script is executed directly (not sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
