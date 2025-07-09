@@ -61,16 +61,17 @@ spinner() {
 usage() {
     cat <<EOF
 Usage:
-  repo create <repo-name> [options]     Create a repo
-  repo delete <repo-name>               Delete a repo (asks confirmation)
-  repo open <repo-name>                 Open repo GitHub page in browser
-  repo list                            List your GitHub repositories
-  repo clone [username/]repo [-d dir]   Clone repo locally
+  repo setup                           Set up GitHub authentication
+  repo create <repo-name> [options]    Create a repo
+  repo delete <repo-name>              Delete a repo (asks confirmation)
+  repo open <repo-name>                Open repo GitHub page in browser
+  repo list                           List your GitHub repositories
+  repo clone [username/]repo [-d dir]  Clone repo locally
      Options for clone:
        -clean          Clone and remove .git folder
        -d directory    Target directory
-  repo push                            Push local commits to remote 'main' branch
-  repo help                            Show this help message
+  repo push                           Push local commits to remote 'main' branch
+  repo help                           Show this help message
 
 Create options:
   -d directory         Optional base directory for new repo
@@ -82,6 +83,7 @@ Create options:
   -push                Push initial commit after creation
 
 Examples:
+  repo setup                                                                      # First-time authentication setup
   repo create MyRepo -p --desc "Private repo" --gitignore Node --license mit --topics cli,tool -d ~/projects -push
   repo delete MyRepo
   repo open MyRepo
@@ -96,9 +98,114 @@ EOF
 
 check_credentials() {
     if ! grep -q "machine api.github.com" "$NETRC_FILE" 2>/dev/null; then
-        echo "No GitHub credentials found in ~/.netrc. Please run setup script."
+        echo "🔐 GitHub credentials not found. Let's set them up!"
+        echo ""
+        setup_credentials
+    fi
+}
+
+setup_credentials() {
+    echo "To use this GitHub CLI tool, you need a Personal Access Token (PAT)."
+    echo ""
+    echo "📋 Follow these steps:"
+    echo "1. Go to: https://github.com/settings/tokens"
+    echo "2. Click 'Generate new token (classic)'"
+    echo "3. Give it a name like 'GitHub CLI Tool'"
+    echo "4. Select the 'repo' scope (full control of private repositories)"
+    echo "5. Click 'Generate token'"
+    echo "6. Copy the generated token"
+    echo ""
+    
+    # Open GitHub token page if possible
+    echo "🌐 Opening GitHub token settings page..."
+    open_url "https://github.com/settings/tokens"
+    echo ""
+    
+    # Get username
+    while true; do
+        echo -n "Enter your GitHub username: "
+        read -r github_username
+        if [ -n "$github_username" ]; then
+            break
+        fi
+        echo "Username cannot be empty. Please try again."
+    done
+    
+    # Get token
+    while true; do
+        echo -n "Enter your GitHub Personal Access Token: "
+        read -r -s github_token
+        echo ""
+        if [ -n "$github_token" ]; then
+            break
+        fi
+        echo "Token cannot be empty. Please try again."
+    done
+    
+    # Verify credentials
+    echo ""
+    echo "🔍 Verifying credentials..."
+    local test_response
+    test_response=$(curl -s -H "Authorization: token $github_token" https://api.github.com/user 2>/dev/null)
+    
+    if echo "$test_response" | jq -e '.login' >/dev/null 2>&1; then
+        local api_username
+        api_username=$(echo "$test_response" | jq -r '.login')
+        if [ "$api_username" != "$github_username" ]; then
+            echo "⚠️ Warning: The token belongs to user '$api_username', not '$github_username'"
+            echo -n "Continue anyway? (y/N): "
+            read -r continue_choice
+            if [[ ! "$continue_choice" =~ ^[Yy]$ ]]; then
+                echo "Setup cancelled."
+                exit 1
+            fi
+            github_username="$api_username"
+        fi
+        echo "✅ Credentials verified for user: $github_username"
+    else
+        echo "❌ Invalid credentials. Please check your username and token."
+        echo ""
+        echo "Common issues:"
+        echo "• Make sure the token has 'repo' scope"
+        echo "• Check that the token hasn't expired"
+        echo "• Verify you copied the token correctly"
         exit 1
     fi
+    
+    # Create .netrc file
+    echo ""
+    echo "💾 Saving credentials..."
+    
+    # Backup existing .netrc if it exists
+    if [ -f "$NETRC_FILE" ]; then
+        cp "$NETRC_FILE" "$NETRC_FILE.backup.$(date +%Y%m%d_%H%M%S)"
+        echo "📋 Backed up existing .netrc file"
+    fi
+    
+    # Create directory if it doesn't exist
+    mkdir -p "$(dirname "$NETRC_FILE")"
+    
+    # Write credentials to .netrc
+    {
+        echo "machine api.github.com"
+        echo "  login $github_username"
+        echo "  password $github_token"
+        echo ""
+    } >> "$NETRC_FILE"
+    
+    # Set secure permissions
+    chmod 600 "$NETRC_FILE"
+    
+    # Save username to config
+    echo "GITHUB_USER=\"$github_username\"" > "$REPO_CLI_CONFIG"
+    
+    echo "✅ Setup complete!"
+    echo ""
+    echo "🎉 You can now use all repo commands:"
+    echo "  repo list              # List your repositories"
+    echo "  repo create <name>     # Create a new repository"
+    echo "  repo clone <repo>      # Clone a repository"
+    echo ""
 }
 
 check_token_scopes() {
@@ -189,6 +296,12 @@ github_user=${GITHUB_USER:-$(grep -A2 "machine api.github.com" "$NETRC_FILE" | g
 case "$COMMAND" in
     help)
         usage
+        ;;
+
+    setup)
+        echo "🔧 Setting up GitHub CLI authentication..."
+        echo ""
+        setup_credentials
         ;;
 
     delete)
